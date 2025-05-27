@@ -16,6 +16,7 @@ import addAppAutomationTools from "./tools/appautomate.js";
 import addFailureLogsTools from "./tools/getFailureLogs.js";
 import addAutomateTools from "./tools/automate.js";
 import { setupOnInitialized } from "./oninitialized.js";
+import addAnalyseTestFailureTool from "./tools/analysetestfailure.js";
 
 function registerTools(server: McpServer) {
   addSDKTools(server);
@@ -26,6 +27,7 @@ function registerTools(server: McpServer) {
   addAppAutomationTools(server);
   addFailureLogsTools(server);
   addAutomateTools(server);
+  addAnalyseTestFailureTool(server);
 }
 
 // Create an MCP server

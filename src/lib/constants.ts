@@ -1,3 +1,5 @@
+import { Network } from "inspector/promises";
+
 export const SessionType = {
   Automate: "automate",
   AppAutomate: "app-automate",
@@ -15,8 +17,25 @@ export const AppAutomateLogType = {
   CrashLogs: "crashLogs",
 } as const;
 
+export const BrowserstackLogTypes = {
+  Network: "network",
+  Session: "session",
+  Text: "text",
+  Console: "console",
+  Selenium: "selenium",
+  Appium: "appium",
+  Device: "device",
+  Crash: "crash",
+  Playwright: "playwright",
+  Telemetry: "telemetry",
+  Performance: "performance",
+  Terminal: "terminal",
+  BrowserProfiling: "browserProfiling",
+} as const;
+
 export type SessionType = (typeof SessionType)[keyof typeof SessionType];
 export type AutomateLogType =
   (typeof AutomateLogType)[keyof typeof AutomateLogType];
 export type AppAutomateLogType =
   (typeof AppAutomateLogType)[keyof typeof AppAutomateLogType];
+
