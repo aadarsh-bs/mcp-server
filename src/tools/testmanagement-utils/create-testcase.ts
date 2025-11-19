@@ -1,9 +1,10 @@
-import axios from "axios";
-import config from "../../config.js";
+import { apiClient } from "../../lib/apiClient.js";
 import { z } from "zod";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { formatAxiosError } from "../../lib/error.js"; // or correct
+import { formatAxiosError } from "../../lib/error.js";
 import { projectIdentifierToId } from "./TCG-utils/api.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import { getTMBaseURL } from "../../lib/tm-base-url.js";
 
 interface TestCaseStep {
   step: string;
@@ -27,6 +28,7 @@ export interface TestCaseCreateRequest {
   issue_tracker?: IssueTracker;
   tags?: string[];
   custom_fields?: Record<string, string>;
+  automation_status?: string;
 }
 
 export interface TestCaseResponse {
@@ -117,6 +119,12 @@ export const CreateTestCaseSchema = z.object({
     .record(z.string(), z.string())
     .optional()
     .describe("Map of custom field names to values."),
+  automation_status: z
+    .string()
+    .optional()
+    .describe(
+      "Automation status of the test case. Common values include 'not_automated', 'automated', 'automation_not_required'.",
+    ),
 });
 
 export function sanitizeArgs(args: any) {
@@ -125,6 +133,7 @@ export function sanitizeArgs(args: any) {
   if (cleaned.description === null) delete cleaned.description;
   if (cleaned.owner === null) delete cleaned.owner;
   if (cleaned.preconditions === null) delete cleaned.preconditions;
+  if (cleaned.automation_status === null) delete cleaned.automation_status;
 
   if (cleaned.issue_tracker) {
     if (
@@ -138,25 +147,29 @@ export function sanitizeArgs(args: any) {
   return cleaned;
 }
 
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
+
 export async function createTestCase(
   params: TestCaseCreateRequest,
+  config: BrowserStackConfig,
 ): Promise<CallToolResult> {
   const body = { test_case: params };
+  const authString = getBrowserStackAuth(config);
+  const [username, password] = authString.split(":");
 
   try {
-    const response = await axios.post<TestCaseResponse>(
-      `https://test-management.browserstack.com/api/v2/projects/${encodeURIComponent(
+    const tmBaseUrl = await getTMBaseURL(config);
+    const response = await apiClient.post({
+      url: `${tmBaseUrl}/api/v2/projects/${encodeURIComponent(
         params.project_identifier,
       )}/folders/${encodeURIComponent(params.folder_id)}/test-cases`,
-      body,
-      {
-        auth: {
-          username: config.browserstackUsername,
-          password: config.browserstackAccessKey,
-        },
-        headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization:
+          "Basic " + Buffer.from(`${username}:${password}`).toString("base64"),
       },
-    );
+      body,
+    });
 
     const { data } = response.data;
     if (!data.success) {
@@ -175,7 +188,10 @@ export async function createTestCase(
     }
 
     const tc = data.test_case;
-    const projectId = await projectIdentifierToId(params.project_identifier);
+    const projectId = await projectIdentifierToId(
+      params.project_identifier,
+      config,
+    );
 
     return {
       content: [
@@ -185,7 +201,7 @@ export async function createTestCase(
             - Identifier: ${tc.identifier}
             - Title: ${tc.title}
 
-          You can view it here: https://test-management.browserstack.com/projects/${projectId}/folder/search?q=${tc.identifier}`,
+          You can view it here: ${tmBaseUrl}/projects/${projectId}/folder/search?q=${tc.identifier}`,
         },
         {
           type: "text",

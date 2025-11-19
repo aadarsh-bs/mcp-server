@@ -20,7 +20,7 @@ export function findDeviceByName(
   const exact = matches.filter(
     (m) => m.display_name.toLowerCase() === desiredPhone.toLowerCase(),
   );
-  if (exact) return exact;
+  if (exact.length) return exact;
   // If no exact but multiple fuzzy, ask user
   if (matches.length > 1) {
     const names = matches.map((d) => d.display_name).join(", ");

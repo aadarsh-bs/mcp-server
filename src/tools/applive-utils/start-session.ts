@@ -1,28 +1,45 @@
 import logger from "../../logger.js";
-import childProcess from "child_process";
 import {
   getDevicesAndBrowsers,
   BrowserStackProducts,
 } from "../../lib/device-cache.js";
 import { sanitizeUrlParam } from "../../lib/utils.js";
 import { uploadApp } from "./upload-app.js";
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
 import { findDeviceByName } from "./device-search.js";
 import { pickVersion } from "./version-utils.js";
 import { DeviceEntry } from "./types.js";
+import childProcess from "child_process";
+import { BrowserStackConfig } from "../../lib/types.js";
+import envConfig from "../../config.js";
 
 interface StartSessionArgs {
-  appPath: string;
+  appPath?: string;
   desiredPlatform: "android" | "ios";
   desiredPhone: string;
   desiredPlatformVersion: string;
+  browserstackAppUrl?: string;
+}
+
+interface StartSessionOptions {
+  config: BrowserStackConfig;
 }
 
 /**
  * Start an App Live session: filter, select, upload, and open.
  */
-export async function startSession(args: StartSessionArgs): Promise<string> {
-  const { appPath, desiredPlatform, desiredPhone, desiredPlatformVersion } =
-    args;
+export async function startSession(
+  args: StartSessionArgs,
+  options: StartSessionOptions,
+): Promise<string> {
+  const {
+    appPath,
+    desiredPlatform,
+    desiredPhone,
+    desiredPlatformVersion,
+    browserstackAppUrl,
+  } = args;
+  const { config } = options;
 
   // 1) Fetch devices for APP_LIVE
   const data = await getDevicesAndBrowsers(BrowserStackProducts.APP_LIVE);
@@ -60,9 +77,27 @@ export async function startSession(args: StartSessionArgs): Promise<string> {
     note = `\n Note: The requested version "${desiredPlatformVersion}" is not available. Using "${version}" instead.`;
   }
 
-  // 6) Upload app
-  const { app_url } = await uploadApp(appPath);
-  logger.info(`App uploaded: ${app_url}`);
+  // 6) Upload app or use provided URL
+  let app_url: string;
+  if (browserstackAppUrl) {
+    app_url = browserstackAppUrl;
+    logger.info(`Using provided BrowserStack app URL: ${app_url}`);
+  } else {
+    if (!appPath) {
+      throw new Error(
+        "appPath is required when browserstackAppUrl is not provided",
+      );
+    }
+    const authString = getBrowserStackAuth(config);
+    const [username, password] = authString.split(":");
+    const result = await uploadApp(appPath, username, password);
+    app_url = result.app_url;
+    logger.info(`App uploaded: ${app_url}`);
+  }
+
+  if (!app_url) {
+    throw new Error("Failed to upload app. Please try again.");
+  }
 
   // 7) Build URL & open
   const deviceParam = sanitizeUrlParam(
@@ -78,7 +113,10 @@ export async function startSession(args: StartSessionArgs): Promise<string> {
   });
   const launchUrl = `https://app-live.browserstack.com/dashboard#${params.toString()}&device=${deviceParam}`;
 
-  openBrowser(launchUrl);
+  if (!envConfig.REMOTE_MCP) {
+    openBrowser(launchUrl);
+  }
+
   return launchUrl + note;
 }
 

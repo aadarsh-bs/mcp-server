@@ -1,9 +1,11 @@
-import axios from "axios";
-import config from "../../config.js";
+import { apiClient } from "../../lib/apiClient.js";
 import { z } from "zod";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { formatAxiosError } from "../../lib/error.js"; // or correct path
+import { formatAxiosError } from "../../lib/error.js";
 import { projectIdentifierToId } from "../testmanagement-utils/TCG-utils/api.js";
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import { getTMBaseURL } from "../../lib/tm-base-url.js";
 
 // Schema for combined project/folder creation
 export const CreateProjFoldSchema = z.object({
@@ -37,6 +39,7 @@ type CreateProjFoldArgs = z.infer<typeof CreateProjFoldSchema>;
  */
 export async function createProjectOrFolder(
   args: CreateProjFoldArgs,
+  config: BrowserStackConfig,
 ): Promise<CallToolResult> {
   const {
     project_name,
@@ -53,22 +56,29 @@ export async function createProjectOrFolder(
     );
   }
 
+  const authString = getBrowserStackAuth(config);
+  const [username, password] = authString.split(":");
+
   let projId = project_identifier;
 
   // Step 1: Create project if project_name provided
   if (project_name) {
     try {
-      const res = await axios.post(
-        "https://test-management.browserstack.com/api/v2/projects",
-        { project: { name: project_name, description: project_description } },
-        {
-          auth: {
-            username: config.browserstackUsername,
-            password: config.browserstackAccessKey,
-          },
-          headers: { "Content-Type": "application/json" },
+      const authString = getBrowserStackAuth(config);
+      const [username, password] = authString.split(":");
+      const tmBaseUrl = await getTMBaseURL(config);
+      const res = await apiClient.post({
+        url: `${tmBaseUrl}/api/v2/projects`,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:
+            "Basic " +
+            Buffer.from(`${username}:${password}`).toString("base64"),
         },
-      );
+        body: {
+          project: { name: project_name, description: project_description },
+        },
+      });
 
       if (!res.data.success) {
         throw new Error(
@@ -78,8 +88,8 @@ export async function createProjectOrFolder(
       // Project created successfully
 
       projId = res.data.project.identifier;
-    } catch (err) {
-      return formatAxiosError(err, "Failed to create project..");
+    } catch (err: any) {
+      return formatAxiosError(err, "Failed to create project.");
     }
   }
   // Step 2: Create folder if folder_name provided
@@ -87,25 +97,25 @@ export async function createProjectOrFolder(
     if (!projId)
       throw new Error("Cannot create folder without project_identifier.");
     try {
-      const res = await axios.post(
-        `https://test-management.browserstack.com/api/v2/projects/${encodeURIComponent(
+      const tmBaseUrl = await getTMBaseURL(config);
+      const res = await apiClient.post({
+        url: `${tmBaseUrl}/api/v2/projects/${encodeURIComponent(
           projId,
         )}/folders`,
-        {
+        headers: {
+          "Content-Type": "application/json",
+          Authorization:
+            "Basic " +
+            Buffer.from(`${username}:${password}`).toString("base64"),
+        },
+        body: {
           folder: {
             name: folder_name,
             description: folder_description,
             parent_id,
           },
         },
-        {
-          auth: {
-            username: config.browserstackUsername,
-            password: config.browserstackAccessKey,
-          },
-          headers: { "Content-Type": "application/json" },
-        },
-      );
+      });
 
       if (!res.data.success) {
         throw new Error(`Failed to create folder: ${JSON.stringify(res.data)}`);
@@ -113,7 +123,7 @@ export async function createProjectOrFolder(
       // Folder created successfully
 
       const folder = res.data.folder;
-      const projectId = await projectIdentifierToId(projId);
+      const projectId = await projectIdentifierToId(projId, config);
 
       return {
         content: [
@@ -123,11 +133,11 @@ export async function createProjectOrFolder(
               - ID: ${folder.id}
               - Name: ${folder.name}
               - Project Identifier: ${projId}
-            Access it here: https://test-management.browserstack.com/projects/${projectId}/folder/${folder.id}/`,
+            Access it here: ${tmBaseUrl}/projects/${projectId}/folder/${folder.id}/`,
           },
         ],
       };
-    } catch (err) {
+    } catch (err: any) {
       return formatAxiosError(err, "Failed to create folder.");
     }
   }

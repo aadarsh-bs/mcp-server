@@ -74,30 +74,48 @@ export async function killExistingBrowserStackLocalProcesses() {
 }
 
 export async function ensureLocalBinarySetup(
+  username: string,
+  password: string,
   localIdentifier?: string,
 ): Promise<void> {
   logger.info(
     "Ensuring local binary setup as it is required for private URLs...",
   );
 
+  if (config.USE_OWN_LOCAL_BINARY_PROCESS) {
+    logger.info(
+      "Using user's own BrowserStack Local binary process, checking if it's running...",
+    );
+
+    const isRunning = await isBrowserStackLocalRunning();
+    if (!isRunning) {
+      throw new Error(
+        "USE_OWN_LOCAL_BINARY_PROCESS is enabled but BrowserStack Local process is not running. Please start your BrowserStack Local binary process first.",
+      );
+    }
+
+    logger.info(
+      "BrowserStack Local process is running, proceeding with user's own process.",
+    );
+    return;
+  }
+
   const localBinary = new Local();
   await killExistingBrowserStackLocalProcesses();
 
-  const requestBody: {
-    key: string;
-    username: string;
-    localIdentifier?: string;
-  } = {
-    key: config.browserstackAccessKey,
-    username: config.browserstackUsername,
+  // Use a single options object from config and extend with required fields
+  const bsLocalArgs: Record<string, any> = {
+    ...(config.browserstackLocalOptions || {}),
+    key: password,
+    username,
   };
 
   if (localIdentifier) {
-    requestBody.localIdentifier = localIdentifier;
+    bsLocalArgs.localIdentifier = localIdentifier;
   }
 
   return await new Promise((resolve, reject) => {
-    localBinary.start(requestBody, (error?: Error) => {
+    localBinary.start(bsLocalArgs, (error?: Error) => {
       if (error) {
         logger.error(
           `Unable to start BrowserStack Local... please check your credentials and try again. Error: ${error}`,

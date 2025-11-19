@@ -15,13 +15,26 @@ import {
   killExistingBrowserStackLocalProcesses,
 } from "../../lib/local.js";
 
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import envConfig from "../../config.js";
+
 /**
  * Prepares local tunnel setup based on URL type
  */
-async function prepareLocalTunnel(url: string): Promise<boolean> {
+async function prepareLocalTunnel(
+  url: string,
+  username: string,
+  password: string,
+): Promise<boolean> {
   const isLocal = isLocalURL(url);
+  if (isLocal && envConfig.REMOTE_MCP) {
+    throw new Error(
+      "Local URLs are not supported in this remote mcp. Please use a public URL.",
+    );
+  }
   if (isLocal) {
-    await ensureLocalBinarySetup();
+    await ensureLocalBinarySetup(username, password);
   } else {
     await killExistingBrowserStackLocalProcesses();
   }
@@ -33,13 +46,24 @@ async function prepareLocalTunnel(url: string): Promise<boolean> {
  */
 export async function startBrowserSession(
   args: DesktopSearchArgs | MobileSearchArgs,
+  config: BrowserStackConfig,
 ): Promise<string> {
   const entry =
     args.platformType === PlatformType.DESKTOP
       ? await filterDesktop(args as DesktopSearchArgs)
       : await filterMobile(args as MobileSearchArgs);
 
-  const isLocal = await prepareLocalTunnel(args.url);
+  // Get credentials from config
+  const authString = getBrowserStackAuth(config);
+  const [username, password] = authString.split(":");
+
+  if (!username || !password) {
+    throw new Error(
+      "BrowserStack credentials are not set. Please configure them in the server settings.",
+    );
+  }
+
+  const isLocal = await prepareLocalTunnel(args.url, username, password);
 
   const url =
     args.platformType === PlatformType.DESKTOP
@@ -49,8 +73,9 @@ export async function startBrowserSession(
           isLocal,
         )
       : buildMobileUrl(args as MobileSearchArgs, entry as MobileEntry, isLocal);
-
-  openBrowser(url);
+  if (!envConfig.REMOTE_MCP) {
+    openBrowser(url);
+  }
   return entry.notes ? `${url}, ${entry.notes}` : url;
 }
 
@@ -69,7 +94,7 @@ function buildDesktopUrl(
     resolution: "responsive-mode",
     speed: "1",
     local: isLocal ? "true" : "false",
-    start: "true",
+    ...(isLocal ? {} : { start: "true" }),
   });
   return `https://live.browserstack.com/dashboard#${params.toString()}`;
 }
@@ -95,7 +120,7 @@ function buildMobileUrl(
     scale_to_fit: "true",
     speed: "1",
     local: isLocal ? "true" : "false",
-    start: "true",
+    ...(isLocal ? {} : { start: "true" }),
   });
   return `https://live.browserstack.com/dashboard#${params.toString()}`;
 }
@@ -108,13 +133,14 @@ function openBrowser(launchUrl: string): void {
       process.platform === "darwin"
         ? ["open", launchUrl]
         : process.platform === "win32"
-          ? ["cmd", "/c", "start", launchUrl]
+          ? ["cmd", "/c", "start", `""`, `"${launchUrl}"`]
           : ["xdg-open", launchUrl];
 
     // nosemgrep:javascript.lang.security.detect-child-process.detect-child-process
     const child = childProcess.spawn(command[0], command.slice(1), {
       stdio: "ignore",
       detached: true,
+      ...(process.platform === "win32" ? { shell: true } : {}),
     });
     child.on("error", (err) =>
       logger.error(`Failed to open browser: ${err}. URL: ${launchUrl}`),

@@ -1,28 +1,34 @@
-import config from "../../config.js";
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
 import { filterLinesByKeywords, validateLogResponse } from "./utils.js";
-
-const auth = Buffer.from(
-  `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-).toString("base64");
+import { BrowserStackConfig } from "../../lib/types.js";
+import { apiClient } from "../../lib/apiClient.js";
 
 // DEVICE LOGS
 export async function retrieveDeviceLogs(
   sessionId: string,
   buildId: string,
+  config: BrowserStackConfig,
 ): Promise<string> {
   const url = `https://api.browserstack.com/app-automate/builds/${buildId}/sessions/${sessionId}/deviceLogs`;
+  const authString = getBrowserStackAuth(config);
+  const auth = Buffer.from(authString).toString("base64");
 
-  const response = await fetch(url, {
+  const response = await apiClient.get({
+    url,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Basic ${auth}`,
     },
+    raise_error: false,
   });
 
   const validationError = validateLogResponse(response, "device logs");
   if (validationError) return validationError.message!;
 
-  const logText = await response.text();
+  const logText =
+    typeof response.data === "string"
+      ? response.data
+      : JSON.stringify(response.data);
   const logs = filterDeviceFailures(logText);
   return logs.length > 0
     ? `Device Failures (${logs.length} found):\n${JSON.stringify(logs, null, 2)}`
@@ -33,20 +39,28 @@ export async function retrieveDeviceLogs(
 export async function retrieveAppiumLogs(
   sessionId: string,
   buildId: string,
+  config: BrowserStackConfig,
 ): Promise<string> {
   const url = `https://api.browserstack.com/app-automate/builds/${buildId}/sessions/${sessionId}/appiumlogs`;
+  const authString = getBrowserStackAuth(config);
+  const auth = Buffer.from(authString).toString("base64");
 
-  const response = await fetch(url, {
+  const response = await apiClient.get({
+    url,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Basic ${auth}`,
     },
+    raise_error: false,
   });
 
   const validationError = validateLogResponse(response, "Appium logs");
   if (validationError) return validationError.message!;
 
-  const logText = await response.text();
+  const logText =
+    typeof response.data === "string"
+      ? response.data
+      : JSON.stringify(response.data);
   const logs = filterAppiumFailures(logText);
   return logs.length > 0
     ? `Appium Failures (${logs.length} found):\n${JSON.stringify(logs, null, 2)}`
@@ -57,20 +71,28 @@ export async function retrieveAppiumLogs(
 export async function retrieveCrashLogs(
   sessionId: string,
   buildId: string,
+  config: BrowserStackConfig,
 ): Promise<string> {
   const url = `https://api.browserstack.com/app-automate/builds/${buildId}/sessions/${sessionId}/crashlogs`;
+  const authString = getBrowserStackAuth(config);
+  const auth = Buffer.from(authString).toString("base64");
 
-  const response = await fetch(url, {
+  const response = await apiClient.get({
+    url,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Basic ${auth}`,
     },
+    raise_error: false,
   });
 
   const validationError = validateLogResponse(response, "crash logs");
   if (validationError) return validationError.message!;
 
-  const logText = await response.text();
+  const logText =
+    typeof response.data === "string"
+      ? response.data
+      : JSON.stringify(response.data);
   const logs = filterCrashFailures(logText);
   return logs.length > 0
     ? `Crash Failures (${logs.length} found):\n${JSON.stringify(logs, null, 2)}`

@@ -6,6 +6,7 @@
 export function resolveVersion(requested: string, available: string[]): string {
   // strip duplicates & sort
   const uniq = Array.from(new Set(available));
+
   // pick min/max
   if (requested === "latest" || requested === "oldest") {
     // try numeric
@@ -21,29 +22,55 @@ export function resolveVersion(requested: string, available: string[]): string {
     return requested === "latest" ? lex[lex.length - 1] : lex[0];
   }
 
-  // exact?
+  // exact match?
   if (uniq.includes(requested)) {
     return requested;
   }
 
-  // try closest numeric
-  const reqNum = parseFloat(requested);
-  const nums = uniq
-    .map((v) => ({ v, n: parseFloat(v) }))
-    .filter((x) => !isNaN(x.n));
-  if (!isNaN(reqNum) && nums.length) {
-    let best = nums[0],
-      bestDiff = Math.abs(nums[0].n - reqNum);
-    for (const x of nums) {
-      const d = Math.abs(x.n - reqNum);
-      if (d < bestDiff) {
-        best = x;
-        bestDiff = d;
-      }
-    }
-    return best.v;
+  const caseInsensitiveMatch = uniq.find(
+    (v) => v.toLowerCase() === requested.toLowerCase(),
+  );
+  if (caseInsensitiveMatch) {
+    return caseInsensitiveMatch;
   }
 
-  // final fallback
+  // Try major version matching (e.g., "14" matches "14.0", "14.1", etc.)
+  const reqNum = parseFloat(requested);
+  if (!isNaN(reqNum)) {
+    const majorVersionMatches = uniq.filter((v) => {
+      const vNum = parseFloat(v);
+      return !isNaN(vNum) && Math.floor(vNum) === Math.floor(reqNum);
+    });
+
+    if (majorVersionMatches.length > 0) {
+      // If multiple matches, prefer the most common format or latest
+      const exactMatch = majorVersionMatches.find(
+        (v) => v === `${Math.floor(reqNum)}.0`,
+      );
+      if (exactMatch) {
+        return exactMatch;
+      }
+      // Return the first match (usually the most common format)
+      return majorVersionMatches[0];
+    }
+  }
+
+  // Fuzzy matching: find the closest version
+  const reqNumForFuzzy = parseFloat(requested);
+  if (!isNaN(reqNumForFuzzy)) {
+    const numericVersions = uniq
+      .map((v) => ({ v, n: parseFloat(v) }))
+      .filter((x) => !isNaN(x.n))
+      .sort(
+        (a, b) =>
+          Math.abs(a.n - reqNumForFuzzy) - Math.abs(b.n - reqNumForFuzzy),
+      );
+
+    if (numericVersions.length > 0) {
+      return numericVersions[0].v;
+    }
+  }
+
+  // Fallback: return the first available version
   return uniq[0];
 }

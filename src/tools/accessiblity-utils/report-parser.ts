@@ -1,4 +1,4 @@
-import fetch from "node-fetch";
+import { apiClient } from "../../lib/apiClient.js";
 import { parse } from "csv-parse/sync";
 
 type SimplifiedAccessibilityIssue = {
@@ -30,9 +30,10 @@ export async function parseAccessibilityReportFromCSV(
   { maxCharacterLength = 5000, nextPage = 0 }: PaginationOptions = {},
 ): Promise<PaginatedResult> {
   // 1) Download & parse
-  const res = await fetch(reportLink);
+  const res = await apiClient.get({ url: reportLink });
   if (!res.ok) throw new Error(`Failed to download report: ${res.statusText}`);
-  const text = await res.text();
+  const text =
+    typeof res.data === "string" ? res.data : JSON.stringify(res.data);
   const all: SimplifiedAccessibilityIssue[] = parse(text, {
     columns: true,
     skip_empty_lines: true,

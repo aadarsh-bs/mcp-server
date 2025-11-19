@@ -13,10 +13,13 @@ import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { signedUrlMap } from "../../lib/inmemory-store.js";
 import logger from "../../logger.js";
 import { projectIdentifierToId } from "./TCG-utils/api.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import { getTMBaseURL } from "../../lib/tm-base-url.js";
 
 export async function createTestCasesFromFile(
   args: CreateTestCasesFromFileArgs,
   context: any,
+  config: BrowserStackConfig,
 ): Promise<CallToolResult> {
   logger.info(
     `createTestCasesFromFile called with projectId: ${args.projectReferenceId}, folderId: ${args.folderId}`,
@@ -25,10 +28,12 @@ export async function createTestCasesFromFile(
   if (args.projectReferenceId.startsWith("PR-")) {
     args.projectReferenceId = await projectIdentifierToId(
       args.projectReferenceId,
+      config,
     );
   }
   const { default_fields, custom_fields } = await fetchFormFields(
     args.projectReferenceId,
+    config,
   );
   const fieldMaps = buildDefaultFieldMaps(default_fields);
   const booleanFieldId = findBooleanFieldId(custom_fields);
@@ -57,6 +62,7 @@ export async function createTestCasesFromFile(
     args.folderId,
     args.projectReferenceId,
     source,
+    config,
   );
 
   const scenariosMap = await pollScenariosTestDetails(
@@ -65,6 +71,7 @@ export async function createTestCasesFromFile(
     context,
     documentId,
     source,
+    config,
   );
 
   const resultString = await bulkCreateTestCases(
@@ -76,15 +83,23 @@ export async function createTestCasesFromFile(
     traceId,
     context,
     documentId,
+    config,
   );
 
   signedUrlMap.delete(args.documentId);
+
+  const tmBaseUrl = await getTMBaseURL(config);
+  const dashboardURL = `${tmBaseUrl}/projects/${args.projectReferenceId}/folder/${args.folderId}/test-cases`;
 
   return {
     content: [
       {
         type: "text",
         text: resultString,
+      },
+      {
+        type: "text",
+        text: `Dashboard URL: ${dashboardURL}`,
       },
     ],
   };

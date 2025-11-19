@@ -1,5 +1,4 @@
-import axios from "axios";
-import config from "../../config.js";
+import { apiClient } from "../../lib/apiClient.js";
 
 interface ReportInitResponse {
   success: true;
@@ -14,34 +13,47 @@ interface ReportResponse {
 }
 
 export class AccessibilityReportFetcher {
-  private auth = {
-    username: config.browserstackUsername,
-    password: config.browserstackAccessKey,
-  };
+  private auth: { username: string; password: string } | undefined;
+
+  public setAuth(auth: { username: string; password: string }): void {
+    this.auth = auth;
+  }
 
   async getReportLink(scanId: string, scanRunId: string): Promise<string> {
     // Initiate CSV link generation
     const initUrl = `https://api-accessibility.browserstack.com/api/website-scanner/v1/scans/${scanId}/scan_runs/issues?scan_run_id=${scanRunId}`;
-    const initResp = await axios.get<ReportInitResponse>(initUrl, {
-      auth: this.auth,
+
+    let basicAuthHeader = undefined;
+    if (this.auth) {
+      const { username, password } = this.auth;
+      basicAuthHeader =
+        "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
+    }
+    const initResp = await apiClient.get({
+      url: initUrl,
+      headers: basicAuthHeader ? { Authorization: basicAuthHeader } : undefined,
     });
-    if (!initResp.data.success) {
+    const initData: ReportInitResponse = initResp.data;
+    if (!initData.success) {
       throw new Error(
-        `Failed to initiate report: ${initResp.data.error || initResp.data.data.message}`,
+        `Failed to initiate report: ${initData.error || initData.data.message}`,
       );
     }
-    const taskId = initResp.data.data.task_id;
+    const taskId = initData.data.task_id;
 
     // Fetch the generated CSV link
     const reportUrl = `https://api-accessibility.browserstack.com/api/website-scanner/v1/scans/${scanId}/scan_runs/issues?task_id=${encodeURIComponent(
       taskId,
     )}`;
-    const reportResp = await axios.get<ReportResponse>(reportUrl, {
-      auth: this.auth,
+    // Use apiClient for the report link request as well
+    const reportResp = await apiClient.get({
+      url: reportUrl,
+      headers: basicAuthHeader ? { Authorization: basicAuthHeader } : undefined,
     });
-    if (!reportResp.data.success) {
-      throw new Error(`Failed to fetch report: ${reportResp.data.error}`);
+    const reportData: ReportResponse = reportResp.data;
+    if (!reportData.success) {
+      throw new Error(`Failed to fetch report: ${reportData.error}`);
     }
-    return reportResp.data.data.reportLink;
+    return reportData.data.reportLink;
   }
 }

@@ -6,7 +6,9 @@ import {
   listTestRunsTool,
   updateTestRunTool,
   uploadProductRequirementFileTool,
-  createTestCasesFromFileTool
+  createTestCasesFromFileTool,
+  createLCAStepsTool,
+  listTestCasesTool
 } from '../../src/tools/testmanagement';
 import addTestManagementTools from '../../src/tools/testmanagement';
 import { createProjectOrFolder } from '../../src/tools/testmanagement-utils/create-project-folder';
@@ -17,12 +19,13 @@ import { addTestResult } from '../../src/tools/testmanagement-utils/add-test-res
 import { listTestRuns } from '../../src/tools/testmanagement-utils/list-testruns';
 import { updateTestRun } from '../../src/tools/testmanagement-utils/update-testrun';
 import { createTestCasesFromFile } from '../../src/tools/testmanagement-utils/testcase-from-file';
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { createLCASteps } from '../../src/tools/testmanagement-utils/create-lca-steps';
 import axios from 'axios';
 import { beforeEach, it, expect, describe, Mocked} from 'vitest';
 import { vi, Mock } from 'vitest';
-import fs from 'fs';
 import { signedUrlMap } from '../../src/lib/inmemory-store';
+import { uploadFile } from '../../src/tools/testmanagement-utils/upload-file';
+
 
 // Mock dependencies
 vi.mock('../../src/tools/testmanagement-utils/create-project-folder', () => ({
@@ -42,6 +45,18 @@ vi.mock('../../src/tools/testmanagement-utils/create-testcase', () => ({
 
 vi.mock('../../src/tools/testmanagement-utils/testcase-from-file', () => ({
   createTestCasesFromFile: vi.fn(),
+}));
+
+vi.mock('../../src/tools/testmanagement-utils/create-lca-steps', () => ({
+  createLCASteps: vi.fn(),
+  CreateLCAStepsSchema: {
+    parse: (args: any) => args,
+    shape: {},
+  },
+}));
+
+vi.mock('../../src/tools/testmanagement-utils/poll-lca-status', () => ({
+  pollLCAStatus: vi.fn(),
 }));
 vi.mock('../../src/config', () => ({
   __esModule: true,
@@ -64,18 +79,35 @@ vi.mock('../../src/tools/testmanagement-utils/add-test-result', () => ({
 
 vi.mock('fs');
 vi.mock('../../src/lib/inmemory-store', () => ({ signedUrlMap: new Map() }));
+vi.mock('../../src/lib/get-auth', () => ({
+  getBrowserStackAuth: vi.fn(() => 'fake-user:fake-key')
+}));
+vi.mock('../../src/tools/testmanagement-utils/TCG-utils/api', () => ({
+  projectIdentifierToId: vi.fn(() => Promise.resolve('999'))
+}));
+vi.mock('form-data', () => {
+  return {
+    default: vi.fn().mockImplementation(() => ({
+      append: vi.fn(),
+      getHeaders: vi.fn(() => ({ 'content-type': 'multipart/form-data' }))
+    }))
+  };
+});
 
-const mockServer = {
-  tool: vi.fn(),
-  server: {
-    getClientVersion: vi.fn(() => ({
-      name: 'vi-client',
-      version: '1.0.0',
-    })),
+const mockConfig = {
+  getClientVersion: vi.fn(() => "test-version"),
+  authHeaders: {
+    username: 'fake-user',
+    password: 'fake-key'
   },
-} as unknown as McpServer;
+  "browserstack-username": "fake-user",
+  "browserstack-access-key": "fake-key"
+};
 
-addTestManagementTools(mockServer);
+// Create a mock server for all tool calls
+const mockServer = { server: { getClientVersion: () => "test-version" } } as any;
+mockServer.tool = vi.fn();
+addTestManagementTools(mockServer, mockConfig);
 
 vi.mock('../../src/tools/testmanagement-utils/create-testrun', () => ({
   createTestRun: vi.fn(),
@@ -97,6 +129,13 @@ vi.mock('../../src/tools/testmanagement-utils/list-testruns', () => ({
 vi.mock('../../src/tools/testmanagement-utils/update-testrun', () => ({
   updateTestRun: vi.fn(),
   UpdateTestRunSchema: {
+    parse: (args: any) => args,
+    shape: {},
+  },
+}));
+vi.mock('../../src/tools/testmanagement-utils/list-testcases', () => ({
+  listTestCases: vi.fn(),
+  ListTestCasesSchema: {
     parse: (args: any) => args,
     shape: {},
   },
@@ -125,6 +164,7 @@ describe('createTestCaseTool', () => {
     issue_tracker: { name: 'jira', host: 'https://jira.example.com' },
     tags: ['smoke'],
     custom_fields: { priority: 'high' },
+    automation_status: 'not_automated',
   };
 
   const mockCallToolResult = {
@@ -137,28 +177,22 @@ describe('createTestCaseTool', () => {
 
   it('should successfully create a test case', async () => {
     (createTestCase as Mock).mockResolvedValue(mockCallToolResult);
-
-    const result = await createTestCaseTool(validArgs);
-
+    const result = await createTestCaseTool(validArgs, mockConfig, mockServer);
     expect(sanitizeArgs).toHaveBeenCalledWith(validArgs);
-    expect(createTestCase).toHaveBeenCalledWith(validArgs);
+    expect(createTestCase).toHaveBeenCalledWith(validArgs, mockConfig);
     expect(result).toBe(mockCallToolResult);
   });
 
   it('should handle API errors while creating test case', async () => {
     (createTestCase as Mock).mockRejectedValue(new Error('API Error'));
-
-    const result = await createTestCaseTool(validArgs);
-
+    const result = await createTestCaseTool(validArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Failed to create test case: API Error');
   });
 
   it('should handle unknown error while creating test case', async () => {
     (createTestCase as Mock).mockRejectedValue('unexpected');
-
-    const result = await createTestCaseTool(validArgs);
-
+    const result = await createTestCaseTool(validArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Unknown error');
   });
@@ -190,38 +224,29 @@ describe('createProjectOrFolderTool', () => {
 
   it('should successfully create a project', async () => {
     (createProjectOrFolder as Mock).mockResolvedValue(mockProjectResponse);
-
-    const result = await createProjectOrFolderTool(validProjectArgs);
-
-    expect(createProjectOrFolder).toHaveBeenCalledWith(validProjectArgs);
+    const result = await createProjectOrFolderTool(validProjectArgs, mockConfig, mockServer);
+    expect(createProjectOrFolder).toHaveBeenCalledWith(validProjectArgs, mockConfig);
     expect(result.content?.[0]?.text).toContain('Project created with identifier=proj-123');
   });
 
   it('should successfully create a folder', async () => {
     (createProjectOrFolder as Mock).mockResolvedValue(mockFolderResponse);
-
-    const result = await createProjectOrFolderTool(validFolderArgs);
-
-    expect(createProjectOrFolder).toHaveBeenCalledWith(validFolderArgs);
+    const result = await createProjectOrFolderTool(validFolderArgs, mockConfig, mockServer);
+    expect(createProjectOrFolder).toHaveBeenCalledWith(validFolderArgs, mockConfig);
     expect(result.content?.[0]?.text).toContain('Folder created: ID=fold-123');
   });
 
   it('should handle error while creating project or folder', async () => {
     (createProjectOrFolder as Mock).mockRejectedValue(new Error('Failed to create project/folder'));
-
-    const result = await createProjectOrFolderTool(validProjectArgs);
-
+    const result = await createProjectOrFolderTool(validProjectArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain(
       'Failed to create project/folder: Failed to create project/folder. Please open an issue on GitHub if the problem persists'
     );
   });
-
   it('should handle unknown error while creating project or folder', async () => {
     (createProjectOrFolder as Mock).mockRejectedValue('some unknown error');
-
-    const result = await createProjectOrFolderTool(validProjectArgs);
-
+    const result = await createProjectOrFolderTool(validProjectArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain(
       'Failed to create project/folder: Unknown error. Please open an issue on GitHub if the problem persists'
@@ -240,25 +265,28 @@ describe('listTestCases util', () => {
   ];
 
   it('should return formatted summary and raw JSON on success', async () => {
-    mockedAxios.get.mockResolvedValue({ data: { success: true, test_cases: mockCases, info: { count: 2 } } });
-
+    (listTestCases as Mock).mockResolvedValue({
+      content: [
+        { type: 'text', text: 'Found 2 test case(s):\n\n• TC-1: Test One [functional | high]\n• TC-2: Test Two [regression | medium]' },
+        { type: 'text', text: JSON.stringify(mockCases, null, 2) },
+      ],
+      isError: false,
+    });
     const args = { project_identifier: 'PR-1', status: 'active', p: 1 };
-    const result = await listTestCases(args as any);
-
-    expect(axios.get).toHaveBeenCalledWith(
-      expect.stringContaining('/projects/PR-1/test-cases?'),
-      expect.objectContaining({ auth: expect.any(Object) })
-    );
+    const result = await listTestCasesTool(args as any, mockConfig, mockServer);
     expect(result.content?.[0]?.text).toContain('Found 2 test case(s):');
     expect(result.content?.[0]?.text).toContain('TC-1: Test One [functional | high]');
     expect(result.content?.[1]?.text).toBe(JSON.stringify(mockCases, null, 2));
   });
 
   it('should handle API errors gracefully', async () => {
-    mockedAxios.get.mockRejectedValue(new Error('Failed to list test cases: Network Error'));
-
-    const result = await listTestCases({ project_identifier: 'PR-1' } as any);
-
+    (listTestCases as Mock).mockResolvedValue({
+      content: [
+        { type: 'text', text: 'Failed to list test cases: Network Error', isError: true },
+      ],
+      isError: true,
+    });
+    const result = await listTestCasesTool({ project_identifier: 'PR-1' } as any, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Failed to list test cases: Network Error');
   });
@@ -284,32 +312,51 @@ describe('createTestRunTool', () => {
 
   it('should successfully create a test run', async () => {
     (createTestRun as Mock).mockResolvedValue(successRunResult);
-
-    const result = await createTestRunTool(validRunArgs as any);
-
-    expect(createTestRun).toHaveBeenCalledWith(validRunArgs);
+    const runArgs = {
+      project_identifier: validRunArgs.project_identifier,
+      test_run: {
+        name: validRunArgs.run_name,
+        test_cases: validRunArgs.test_cases,
+        environment: validRunArgs.environment,
+        metadata: validRunArgs.metadata
+      }
+    };
+    const result = await createTestRunTool(runArgs, mockConfig, mockServer);
     expect(result).toBe(successRunResult);
   });
 
   it('should handle API errors while creating test run', async () => {
     (createTestRun as Mock).mockRejectedValue(new Error('API Error'));
-
-    const result = await createTestRunTool(validRunArgs as any);
-
+    const runArgs = {
+      project_identifier: validRunArgs.project_identifier,
+      test_run: {
+        name: validRunArgs.run_name,
+        test_cases: validRunArgs.test_cases,
+        environment: validRunArgs.environment,
+        metadata: validRunArgs.metadata
+      }
+    };
+    const result = await createTestRunTool(runArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Failed to create test run: API Error');
   });
 
   it('should handle unknown error while creating test run', async () => {
     (createTestRun as Mock).mockRejectedValue('unexpected');
-
-    const result = await createTestRunTool(validRunArgs as any);
-
+    const runArgs = {
+      project_identifier: validRunArgs.project_identifier,
+      test_run: {
+        name: validRunArgs.run_name,
+        test_cases: validRunArgs.test_cases,
+        environment: validRunArgs.environment,
+        metadata: validRunArgs.metadata
+      }
+    };
+    const result = await createTestRunTool(runArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Unknown error');
   });
 });
-
 
 describe('listTestRunsTool', () => {
   beforeEach(() => {
@@ -330,9 +377,7 @@ describe('listTestRunsTool', () => {
       ],
       isError: false,
     });
-
-    const result = await listTestRunsTool({ project_identifier: projectId } as any);
-    expect(listTestRuns).toHaveBeenCalledWith({ project_identifier: projectId });
+    const result = await listTestRunsTool({ project_identifier: projectId }, mockConfig, mockServer);
     expect(result.isError).toBe(false);
     expect(result.content?.[0]?.text).toContain('Found 2 test run(s):');
     expect(result.content?.[1]?.text).toBe(JSON.stringify(mockRuns, null, 2));
@@ -340,7 +385,7 @@ describe('listTestRunsTool', () => {
 
   it('should handle errors', async () => {
     (listTestRuns as Mock).mockRejectedValue(new Error('Network Error'));
-    const result = await listTestRunsTool({ project_identifier: projectId } as any);
+    const result = await listTestRunsTool({ project_identifier: projectId }, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Failed to list test runs: Network Error');
   });
@@ -366,9 +411,15 @@ describe('updateTestRunTool', () => {
       ],
       isError: false,
     });
-
-    const result = await updateTestRunTool(args as any);
-    expect(updateTestRun).toHaveBeenCalledWith(args);
+    const updateArgs = {
+      project_identifier: args.project_identifier,
+      test_run_id: args.test_run_id,
+      test_run: {
+        name: args.test_run.name,
+        run_state: "in_progress" as const
+      }
+    };
+    const result = await updateTestRunTool(updateArgs, mockConfig, mockServer);
     expect(result.isError).toBe(false);
     expect(result.content?.[0]?.text).toContain(`Successfully updated test run ${args.test_run_id}`);
     expect(result.content?.[1]?.text).toBe(JSON.stringify(updated, null, 2));
@@ -376,13 +427,19 @@ describe('updateTestRunTool', () => {
 
   it('should handle errors', async () => {
     (updateTestRun as Mock).mockRejectedValue(new Error('API Error'));
-    const result = await updateTestRunTool(args as any);
+    const updateArgs = {
+      project_identifier: args.project_identifier,
+      test_run_id: args.test_run_id,
+      test_run: {
+        name: args.test_run.name,
+        run_state: "in_progress" as const
+      }
+    };
+    const result = await updateTestRunTool(updateArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Failed to update test run: API Error');
   });
 });
-
-
 
 describe('addTestResultTool', () => {
   beforeEach(() => {
@@ -409,27 +466,14 @@ describe('addTestResultTool', () => {
 
   it('should successfully add a test result', async () => {
     (addTestResult as Mock).mockResolvedValue(successAddResult);
-
-    const result = await addTestResultTool(validArgs as any);
-
-    expect(addTestResult).toHaveBeenCalledWith(validArgs);
-    expect(result).toBe(successAddResult);
-  });
-
-  it('should handle API errors gracefully', async () => {
-    (addTestResult as Mock).mockRejectedValue(new Error('Network Error'));
-
-    const result = await addTestResultTool(validArgs as any);
-
-    expect(result.isError).toBe(true);
-    expect(result.content?.[0]?.text).toContain('Failed to add test result: Network Error');
+    const result = await addTestResultTool(validArgs, mockConfig, mockServer);
+    expect(result.isError).toBe(false);
+    expect(result.content?.[0]?.text).toContain('Successfully added test result to test run run-456');
   });
 
   it('should handle unknown errors gracefully', async () => {
     (addTestResult as Mock).mockRejectedValue('unexpected');
-
-    const result = await addTestResultTool(validArgs as any);
-
+    const result = await addTestResultTool(validArgs, mockConfig, mockServer);
     expect(result.isError).toBe(true);
     expect(result.content?.[0]?.text).toContain('Unknown error');
   });
@@ -445,53 +489,52 @@ const mockContext = { sendNotification: vi.fn(), _meta: { progressToken: "test-p
 
 describe("uploadProductRequirementFileTool", () => {
   beforeEach(() => vi.resetAllMocks());
-
   it("returns error when file does not exist", async () => {
-    (fs.existsSync as Mock).mockReturnValue(false);
-    const res = await uploadProductRequirementFileTool({ project_identifier: testProjectId, file_path: testFilePath });
+    (uploadFile as Mock).mockResolvedValue({
+      content: [
+        { type: 'text', text: 'File /tmp/sample.pdf does not exist.', isError: true },
+      ],
+      isError: true,
+    });
+    const res = await uploadProductRequirementFileTool({ project_identifier: testProjectId, file_path: testFilePath }, mockConfig, mockServer);
     expect(res.isError).toBe(true);
     expect(res.content?.[0]?.text).toContain("does not exist");
   });
-
   it("uploads file and returns metadata", async () => {
-    (fs.existsSync as Mock).mockReturnValue(true);
-    (fs.createReadStream as Mock).mockReturnValue("STREAM");
-    const mockUpload = {
-      status: 200,
-      data: {
-        generic_attachment: [
-          {
-            id: mockFileId,
+    const mockSuccessResponse = {
+      content: [
+        { type: 'text', text: 'Successfully uploaded sample.pdf to BrowserStack Test Management.' },
+        { 
+          type: 'text', 
+          text: JSON.stringify([{
             name: "sample.pdf",
-            download_url: mockDownloadUrl,
-            content_type: "application/pdf",
-            size: 1024
-          }
-        ]
-      }
+            documentID: "mock-doc-id",
+            contentType: "application/pdf",
+            size: 1024,
+            projectReferenceId: "999"
+          }], null, 2)
+        },
+      ],
+      isError: false,
     };
-    mockedAxios.get.mockResolvedValue({ data: { success: true, projects: [{ identifier: testProjectId, id: "999" }] } });
-    mockedAxios.post.mockResolvedValue(mockUpload);
-    const res = await uploadProductRequirementFileTool({ project_identifier: testProjectId, file_path: testFilePath });
+    (uploadFile as Mock).mockResolvedValue(mockSuccessResponse);
+    const res = await uploadProductRequirementFileTool({ project_identifier: testProjectId, file_path: testFilePath }, mockConfig, mockServer);
+    expect(uploadFile).toHaveBeenCalledWith({ project_identifier: testProjectId, file_path: testFilePath }, mockConfig);
     expect(res.isError ?? false).toBe(false);
     expect(res.content?.[1]?.text).toContain("documentID");
   });
 });
 
-// Tests for createTestCasesFromFileTool
 describe("createTestCasesFromFileTool", () => {
   beforeEach(() => vi.resetAllMocks());
-
   it("returns error when document is not in signedUrlMap", async () => {
     signedUrlMap.clear();
     (createTestCasesFromFile as Mock).mockRejectedValue(new Error("Re-Upload the file"));
-    
     const args = { documentId: testDocumentId, folderId: testFolderId, projectReferenceId: testProjectId };
-    const res = await createTestCasesFromFileTool(args as any, mockContext);
+    const res = await createTestCasesFromFileTool(args as any, mockContext, mockConfig, mockServer);
     expect(res.isError).toBe(true);
     expect(res.content?.[0]?.text).toContain("Re-Upload the file");
   });
-
   it("creates test cases from a file successfully", async () => {
     signedUrlMap.set(testDocumentId, { fileId: mockFileId, downloadUrl: mockDownloadUrl });
     mockedAxios.get.mockResolvedValueOnce({
@@ -521,9 +564,124 @@ describe("createTestCasesFromFileTool", () => {
       content: [{ type: "text", text: "Total of 5 test cases created in 2 scenarios." }],
       isError: false
     });
-    
-    const res = await createTestCasesFromFileTool(args as any, mockContext);
+    const res = await createTestCasesFromFileTool(args as any, mockContext, mockConfig, mockServer);
     expect(res.isError ?? false).toBe(false);
     expect(res.content?.[0]?.text).toContain("test cases created");
   });
 });
+
+describe("createLCAStepsTool", () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  const mockContext = { 
+    sendNotification: vi.fn(), 
+    _meta: { progressToken: "test-lca-progress-token" } 
+  };
+
+  const validArgs = {
+    project_identifier: "PR-123",
+    test_case_identifier: "TC-456",
+    base_url: "google.com",
+    credentials: {
+      username: "test@example.com",
+      password: "password123",
+    },
+    local_enabled: false,
+    test_name: "Sample LCA Test",
+    test_case_details: {
+      name: "Test Case Name",
+      description: "Test case description",
+      preconditions: "Test preconditions",
+      test_case_steps: [
+        { step: "Step 1", result: "Expected result 1" },
+        { step: "Step 2", result: "Expected result 2" },
+      ],
+    },
+    version: "v2",
+  };
+
+  it("creates LCA steps successfully", async () => {
+    const mockResponse = {
+      content: [
+        { type: "text", text: "Successfully created LCA steps for test case TC-456" },
+        { type: "text", text: JSON.stringify({ success: true }, null, 2) },
+      ],
+      isError: false,
+    };
+
+    (createLCASteps as Mock).mockResolvedValue(mockResponse);
+
+    const result = await createLCAStepsTool(validArgs as any, mockContext, mockConfig, mockServer);
+
+    expect(createLCASteps).toHaveBeenCalledWith(validArgs, mockContext, mockConfig);
+    expect(result).toBe(mockResponse);
+    expect(result.isError).toBe(false);
+  });
+
+  it("handles errors when creating LCA steps", async () => {
+    (createLCASteps as Mock).mockRejectedValue(new Error("API Error"));
+
+    const result = await createLCAStepsTool(validArgs as any, mockContext, mockConfig, mockServer);
+
+    expect(result.isError).toBe(true);
+    expect(result.content?.[0]?.text).toContain("Failed to create LCA steps: API Error");
+  });
+
+  it("handles unknown errors when creating LCA steps", async () => {
+    (createLCASteps as Mock).mockRejectedValue("unexpected error");
+
+    const result = await createLCAStepsTool(validArgs as any, mockContext, mockConfig, mockServer);
+
+    expect(result.isError).toBe(true);
+    expect(result.content?.[0]?.text).toContain("Failed to create LCA steps: Unknown error");
+  });
+
+  it("creates LCA steps with wait_for_completion disabled", async () => {
+    const argsWithoutWait = { ...validArgs, wait_for_completion: false };
+    const mockResponse = {
+      content: [
+        { type: "text", text: "LCA steps creation initiated for test case TC-456" },
+        { type: "text", text: "LCA build started. Check the BrowserStack Test Management UI for completion status." },
+      ],
+      isError: false,
+    };
+
+    (createLCASteps as Mock).mockResolvedValue(mockResponse);
+
+    const result = await createLCAStepsTool(argsWithoutWait as any, mockContext, mockConfig, mockServer);
+
+    expect(result.content?.[1]?.text).toContain("Check the BrowserStack Test Management UI");
+  });
+
+  it("creates LCA steps with custom max wait time", async () => {
+    const argsWithCustomWait = { ...validArgs, max_wait_minutes: 5 };
+    const mockResponse = {
+      content: [
+        { type: "text", text: "LCA steps creation initiated for test case TC-456" },
+        { type: "text", text: "Warning: LCA build did not complete within 5 minutes." },
+      ],
+      isError: false,
+    };
+
+    (createLCASteps as Mock).mockResolvedValue(mockResponse);
+
+    const result = await createLCAStepsTool(argsWithCustomWait as any, mockContext, mockConfig, mockServer);
+
+    expect(result.content?.[1]?.text).toContain("within 5 minutes");
+  });
+});
+
+vi.mock('../../src/tools/testmanagement-utils/upload-file', () => {
+  const uploadFile = vi.fn();
+  return {
+    uploadFile,
+    UploadFileSchema: {
+      parse: (args: any) => args,
+      shape: {},
+    },
+    __esModule: true,
+    default: { uploadFile },
+  };
+});
+
+// Get the mocked uploadFile

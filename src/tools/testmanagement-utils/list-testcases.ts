@@ -1,8 +1,10 @@
-import axios from "axios";
-import config from "../../config.js";
+import { apiClient } from "../../lib/apiClient.js";
 import { z } from "zod";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { formatAxiosError } from "../../lib/error.js";
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import { getTMBaseURL } from "../../lib/tm-base-url.js";
 
 /**
  * Schema for listing test cases with optional filters.
@@ -38,6 +40,7 @@ export type ListTestCasesArgs = z.infer<typeof ListTestCasesSchema>;
  */
 export async function listTestCases(
   args: ListTestCasesArgs,
+  config: BrowserStackConfig,
 ): Promise<CallToolResult> {
   try {
     // Build query string
@@ -47,14 +50,18 @@ export async function listTestCases(
     if (args.priority) params.append("priority", args.priority);
     if (args.p !== undefined) params.append("p", args.p.toString());
 
-    const url = `https://test-management.browserstack.com/api/v2/projects/${encodeURIComponent(
+    const tmBaseUrl = await getTMBaseURL(config);
+    const url = `${tmBaseUrl}/api/v2/projects/${encodeURIComponent(
       args.project_identifier,
     )}/test-cases?${params.toString()}`;
 
-    const resp = await axios.get(url, {
-      auth: {
-        username: config.browserstackUsername,
-        password: config.browserstackAccessKey,
+    const authString = getBrowserStackAuth(config);
+    const [username, password] = authString.split(":");
+    const resp = await apiClient.get({
+      url,
+      headers: {
+        Authorization:
+          "Basic " + Buffer.from(`${username}:${password}`).toString("base64"),
       },
     });
 

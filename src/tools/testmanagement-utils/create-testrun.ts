@@ -1,8 +1,10 @@
-import axios from "axios";
-import config from "../../config.js";
+import { apiClient } from "../../lib/apiClient.js";
 import { z } from "zod";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { formatAxiosError } from "../../lib/error.js";
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import { getTMBaseURL } from "../../lib/tm-base-url.js";
 
 /**
  * Schema for creating a test run.
@@ -53,6 +55,7 @@ export type CreateTestRunArgs = z.infer<typeof CreateTestRunSchema>;
  */
 export async function createTestRun(
   rawArgs: CreateTestRunArgs,
+  config: BrowserStackConfig,
 ): Promise<CallToolResult> {
   try {
     const inputArgs = {
@@ -64,21 +67,22 @@ export async function createTestRun(
     };
     const args = CreateTestRunSchema.parse(inputArgs);
 
-    const url = `https://test-management.browserstack.com/api/v2/projects/${encodeURIComponent(
+    const tmBaseUrl = await getTMBaseURL(config);
+    const url = `${tmBaseUrl}/api/v2/projects/${encodeURIComponent(
       args.project_identifier,
     )}/test-runs`;
 
-    const response = await axios.post(
+    const authString = getBrowserStackAuth(config);
+    const [username, password] = authString.split(":");
+    const response = await apiClient.post({
       url,
-      { test_run: args.test_run },
-      {
-        auth: {
-          username: config.browserstackUsername,
-          password: config.browserstackAccessKey,
-        },
-        headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization:
+          "Basic " + Buffer.from(`${username}:${password}`).toString("base64"),
       },
-    );
+      body: { test_run: args.test_run },
+    });
 
     const data = response.data;
     if (!data.success) {

@@ -1,5 +1,4 @@
 import { assertOkResponse } from "../../lib/utils.js";
-import config from "../../config.js";
 
 interface SelectorMapping {
   originalSelector: string;
@@ -10,12 +9,20 @@ interface SelectorMapping {
   };
 }
 
-export async function getSelfHealSelectors(sessionId: string) {
-  const credentials = `${config.browserstackUsername}:${config.browserstackAccessKey}`;
-  const auth = Buffer.from(credentials).toString("base64");
+import { getBrowserStackAuth } from "../../lib/get-auth.js";
+import { BrowserStackConfig } from "../../lib/types.js";
+import { apiClient } from "../../lib/apiClient.js";
+
+export async function getSelfHealSelectors(
+  sessionId: string,
+  config: BrowserStackConfig,
+) {
+  const authString = getBrowserStackAuth(config);
+  const auth = Buffer.from(authString).toString("base64");
   const url = `https://api.browserstack.com/automate/sessions/${sessionId}/logs`;
 
-  const response = await fetch(url, {
+  const response = await apiClient.get({
+    url,
     headers: {
       "Content-Type": "application/json",
       Authorization: `Basic ${auth}`,
@@ -23,7 +30,10 @@ export async function getSelfHealSelectors(sessionId: string) {
   });
 
   await assertOkResponse(response, "session logs");
-  const logText = await response.text();
+  const logText =
+    typeof response.data === "string"
+      ? response.data
+      : JSON.stringify(response.data);
   return extractHealedSelectors(logText);
 }
 

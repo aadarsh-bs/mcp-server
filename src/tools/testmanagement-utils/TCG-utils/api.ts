@@ -1,4 +1,4 @@
-import axios from "axios";
+import { apiClient } from "../../../lib/apiClient.js";
 import {
   TCG_TRIGGER_URL,
   TCG_POLL_URL,
@@ -12,17 +12,22 @@ import {
   CreateTestCasesFromFileArgs,
 } from "./types.js";
 import { createTestCasePayload } from "./helpers.js";
-import config from "../../../config.js";
+import { getBrowserStackAuth } from "../../../lib/get-auth.js";
+import { BrowserStackConfig } from "../../../lib/types.js";
+import { getTMBaseURL } from "../../../lib/tm-base-url.js";
 
 /**
  * Fetch default and custom form fields for a project.
  */
 export async function fetchFormFields(
   projectId: string,
+  config: BrowserStackConfig,
 ): Promise<{ default_fields: any; custom_fields: any }> {
-  const res = await axios.get(FORM_FIELDS_URL(projectId), {
+  const tmBaseUrl = await getTMBaseURL(config);
+  const res = await apiClient.get({
+    url: FORM_FIELDS_URL(tmBaseUrl, projectId),
     headers: {
-      "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
+      "API-TOKEN": getBrowserStackAuth(config),
     },
   });
   return res.data;
@@ -37,27 +42,27 @@ export async function triggerTestCaseGeneration(
   folderId: string,
   projectId: string,
   source: string,
+  config: BrowserStackConfig,
 ): Promise<string> {
-  const res = await axios.post(
-    TCG_TRIGGER_URL,
-    {
+  const tmBaseUrl = await getTMBaseURL(config);
+  const res = await apiClient.post({
+    url: TCG_TRIGGER_URL(tmBaseUrl),
+    headers: {
+      "API-TOKEN": getBrowserStackAuth(config),
+      "Content-Type": "application/json",
+      "request-source": source,
+    },
+    body: {
       document,
       documentId,
       folderId,
       projectId,
       source,
-      webhookUrl: `https://test-management.browserstack.com/api/v1/projects/${projectId}/folder/${folderId}/webhooks/tcg`,
+      webhookUrl: `${tmBaseUrl}/api/v1/projects/${projectId}/folder/${folderId}/webhooks/tcg`,
     },
-    {
-      headers: {
-        "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-        "Content-Type": "application/json",
-        "request-source": source,
-      },
-    },
-  );
+  });
   if (res.status !== 200) {
-    throw new Error(`Trigger failed: ${res.statusText}`);
+    throw new Error(`Trigger failed: ${res.statusText || res.status}`);
   }
   return res.data["x-bstack-traceRequestId"];
 }
@@ -71,26 +76,26 @@ export async function fetchTestCaseDetails(
   projectId: string,
   testCaseIds: string[],
   source: string,
+  config: BrowserStackConfig,
 ): Promise<string> {
   if (testCaseIds.length === 0) {
     throw new Error("No testCaseIds provided to fetchTestCaseDetails");
   }
-  const res = await axios.post(
-    FETCH_DETAILS_URL,
-    {
+  const tmBaseUrl = await getTMBaseURL(config);
+  const res = await apiClient.post({
+    url: FETCH_DETAILS_URL(tmBaseUrl),
+    headers: {
+      "API-TOKEN": getBrowserStackAuth(config),
+      "request-source": source,
+      "Content-Type": "application/json",
+    },
+    body: {
       document_id: documentId,
       folder_id: folderId,
       project_id: projectId,
       test_case_ids: testCaseIds,
     },
-    {
-      headers: {
-        "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-        "request-source": source,
-        "Content-Type": "application/json",
-      },
-    },
-  );
+  });
   if (res.data.data.success !== true) {
     throw new Error(`Fetch details failed: ${res.data.data.message}`);
   }
@@ -102,25 +107,24 @@ export async function fetchTestCaseDetails(
  */
 export async function pollTestCaseDetails(
   traceRequestId: string,
+  config: BrowserStackConfig,
 ): Promise<Record<string, any>> {
   const detailMap: Record<string, any> = {};
   let done = false;
+  const tmBaseUrl = await getTMBaseURL(config);
+  const TCG_POLL_URL_VALUE = TCG_POLL_URL(tmBaseUrl);
 
   while (!done) {
     // add a bit of jitter to avoid synchronized polling storms
     await new Promise((r) => setTimeout(r, 10000 + Math.random() * 5000));
 
-    const poll = await axios.post(
-      `${TCG_POLL_URL}?x-bstack-traceRequestId=${encodeURIComponent(
-        traceRequestId,
-      )}`,
-      {},
-      {
-        headers: {
-          "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-        },
+    const poll = await apiClient.post({
+      url: `${TCG_POLL_URL_VALUE}?x-bstack-traceRequestId=${encodeURIComponent(traceRequestId)}`,
+      headers: {
+        "API-TOKEN": getBrowserStackAuth(config),
       },
-    );
+      body: {},
+    });
 
     if (!poll.data.data.success) {
       throw new Error(`Polling failed: ${poll.data.data.message}`);
@@ -153,29 +157,30 @@ export async function pollScenariosTestDetails(
   context: any,
   documentId: number,
   source: string,
+  config: BrowserStackConfig,
 ): Promise<Record<string, Scenario>> {
   const { folderId, projectReferenceId } = args;
   const scenariosMap: Record<string, Scenario> = {};
   const detailPromises: Promise<Record<string, any>>[] = [];
   let iteratorCount = 0;
+  const tmBaseUrl = await getTMBaseURL(config);
+  const TCG_POLL_URL_VALUE = TCG_POLL_URL(tmBaseUrl);
 
   // Promisify interval-style polling using a wrapper
   await new Promise<void>((resolve, reject) => {
     const intervalId = setInterval(async () => {
       try {
-        const poll = await axios.post(
-          `${TCG_POLL_URL}?x-bstack-traceRequestId=${encodeURIComponent(traceId)}`,
-          {},
-          {
-            headers: {
-              "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-            },
+        const poll = await apiClient.post({
+          url: `${TCG_POLL_URL_VALUE}?x-bstack-traceRequestId=${encodeURIComponent(traceId)}`,
+          headers: {
+            "API-TOKEN": getBrowserStackAuth(config),
           },
-        );
+          body: {},
+        });
 
         if (poll.status !== 200) {
           clearInterval(intervalId);
-          reject(new Error(`Polling error: ${poll.statusText}`));
+          reject(new Error(`Polling error: ${poll.statusText || poll.status}`));
           return;
         }
 
@@ -191,7 +196,7 @@ export async function pollScenariosTestDetails(
                 progressToken: context._meta?.progressToken ?? traceId,
                 progress: count,
                 total: count,
-                message: `Fetched ${count} scenarios`,
+                message: `Generated ${count} scenarios`,
               },
             });
           }
@@ -212,8 +217,9 @@ export async function pollScenariosTestDetails(
                 projectReferenceId,
                 ids,
                 source,
+                config,
               );
-              detailPromises.push(pollTestCaseDetails(reqId));
+              detailPromises.push(pollTestCaseDetails(reqId, config));
 
               scenariosMap[sc.id] ||= {
                 id: sc.id,
@@ -230,7 +236,7 @@ export async function pollScenariosTestDetails(
                   progressToken: context._meta?.progressToken ?? traceId,
                   progress: iteratorCount,
                   total,
-                  message: `Fetched ${array.length} test cases for scenario ${iteratorCount} out of ${total}`,
+                  message: `Generated ${array.length} test cases for scenario ${iteratorCount} out of ${total}`,
                 },
               });
             }
@@ -275,11 +281,14 @@ export async function bulkCreateTestCases(
   traceId: string,
   context: any,
   documentId: number,
+  config: BrowserStackConfig,
 ): Promise<string> {
   const results: Record<string, any> = {};
   const total = Object.keys(scenariosMap).length;
   let doneCount = 0;
   let testCaseCount = 0;
+  const tmBaseUrl = await getTMBaseURL(config);
+  const BULK_CREATE_URL_VALUE = BULK_CREATE_URL(tmBaseUrl, projectId, folderId);
 
   for (const { id, testcases } of Object.values(scenariosMap)) {
     const testCaseLength = testcases.length;
@@ -300,22 +309,20 @@ export async function bulkCreateTestCases(
     };
 
     try {
-      const resp = await axios.post(
-        BULK_CREATE_URL(projectId, folderId),
-        payload,
-        {
-          headers: {
-            "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-            "Content-Type": "application/json",
-          },
+      const resp = await apiClient.post({
+        url: BULK_CREATE_URL_VALUE,
+        headers: {
+          "API-TOKEN": getBrowserStackAuth(config),
+          "Content-Type": "application/json",
         },
-      );
+        body: payload,
+      });
       results[id] = resp.data;
       await context.sendNotification({
         method: "notifications/progress",
         params: {
           progressToken: context._meta?.progressToken ?? "bulk-create",
-          message: `Bulk create done for scenario ${doneCount} of ${total}`,
+          message: `Saving and creating test cases...`,
           total,
           progress: doneCount,
         },
@@ -326,7 +333,7 @@ export async function bulkCreateTestCases(
         method: "notifications/progress",
         params: {
           progressToken: context._meta?.progressToken ?? traceId,
-          message: `Bulk create failed for scenario ${id}: ${error instanceof Error ? error.message : "Unknown error"}`,
+          message: `Creation failed for scenario ${id}: ${error instanceof Error ? error.message : "Unknown error"}`,
           total,
           progress: doneCount,
         },
@@ -342,17 +349,22 @@ export async function bulkCreateTestCases(
 
 export async function projectIdentifierToId(
   projectId: string,
+  config: BrowserStackConfig,
 ): Promise<string> {
-  const url = `https://test-management.browserstack.com/api/v1/projects/?q=${projectId}`;
+  const tmBaseUrl = await getTMBaseURL(config);
+  const url = `${tmBaseUrl}/api/v1/projects/?q=${projectId}`;
 
-  const response = await axios.get(url, {
+  const response = await apiClient.get({
+    url,
     headers: {
-      "API-TOKEN": `${config.browserstackUsername}:${config.browserstackAccessKey}`,
+      "API-TOKEN": getBrowserStackAuth(config),
       accept: "application/json, text/plain, */*",
     },
   });
   if (response.data.success !== true) {
-    throw new Error(`Failed to fetch project ID: ${response.statusText}`);
+    throw new Error(
+      `Failed to fetch project ID: ${response.statusText || response.status}`,
+    );
   }
   for (const project of response.data.projects) {
     if (project.identifier === projectId) {
@@ -360,4 +372,65 @@ export async function projectIdentifierToId(
     }
   }
   throw new Error(`Project with identifier ${projectId} not found.`);
+}
+
+export async function testCaseIdentifierToDetails(
+  projectId: string,
+  testCaseIdentifier: string,
+  config: BrowserStackConfig,
+): Promise<{ testCaseId: string; folderId: string }> {
+  const tmBaseUrl = await getTMBaseURL(config);
+  const url = `${tmBaseUrl}/api/v1/projects/${projectId}/test-cases/search?q[query]=${testCaseIdentifier}`;
+
+  const response = await apiClient.get({
+    url,
+    headers: {
+      "API-TOKEN": getBrowserStackAuth(config),
+      accept: "application/json, text/plain, */*",
+    },
+  });
+
+  if (response.data.success !== true) {
+    throw new Error(
+      `Failed to fetch test case details: ${response.statusText || response.status}`,
+    );
+  }
+
+  // Check if test_cases array exists and has items
+  if (
+    !response.data.test_cases ||
+    !Array.isArray(response.data.test_cases) ||
+    response.data.test_cases.length === 0
+  ) {
+    throw new Error(
+      `No test cases found in response for identifier ${testCaseIdentifier}`,
+    );
+  }
+
+  for (const testCase of response.data.test_cases) {
+    if (testCase.identifier === testCaseIdentifier) {
+      // Extract folder ID from the links.folder URL
+      // URL format: "/api/v1/projects/1930314/folder/10193436/test-cases"
+      let folderId = "";
+      if (testCase.links && testCase.links.folder) {
+        const folderMatch = testCase.links.folder.match(/\/folder\/(\d+)\//);
+        if (folderMatch && folderMatch[1]) {
+          folderId = folderMatch[1];
+        }
+      }
+
+      if (!folderId) {
+        throw new Error(
+          `Could not extract folder ID for test case ${testCaseIdentifier}`,
+        );
+      }
+
+      return {
+        testCaseId: testCase.id.toString(),
+        folderId: folderId,
+      };
+    }
+  }
+
+  throw new Error(`Test case with identifier ${testCaseIdentifier} not found.`);
 }

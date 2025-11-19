@@ -1,10 +1,11 @@
-// File: src/tools/live.ts
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import logger from "../logger.js";
 import { startBrowserSession } from "./live-utils/start-session.js";
 import { PlatformType } from "./live-utils/types.js";
 import { trackMCP } from "../lib/instrumentation.js";
+import { BrowserStackConfig } from "../lib/types.js";
+import globalConfig from "../config.js";
 
 // Define the schema shape
 const LiveArgsShape = {
@@ -41,20 +42,24 @@ const LiveArgsSchema = z.object(LiveArgsShape);
  */
 async function launchDesktopSession(
   args: z.infer<typeof LiveArgsSchema>,
+  config: BrowserStackConfig,
 ): Promise<string> {
   if (!args.desiredBrowser)
     throw new Error("You must provide a desiredBrowser");
   if (!args.desiredBrowserVersion)
     throw new Error("You must provide a desiredBrowserVersion");
 
-  return startBrowserSession({
-    platformType: PlatformType.DESKTOP,
-    url: args.desiredURL,
-    os: args.desiredOS,
-    osVersion: args.desiredOSVersion,
-    browser: args.desiredBrowser,
-    browserVersion: args.desiredBrowserVersion,
-  });
+  return startBrowserSession(
+    {
+      platformType: PlatformType.DESKTOP,
+      url: args.desiredURL,
+      os: args.desiredOS,
+      osVersion: args.desiredOSVersion,
+      browser: args.desiredBrowser,
+      browserVersion: args.desiredBrowserVersion,
+    },
+    config,
+  );
 }
 
 /**
@@ -62,57 +67,83 @@ async function launchDesktopSession(
  */
 async function launchMobileSession(
   args: z.infer<typeof LiveArgsSchema>,
+  config: BrowserStackConfig,
 ): Promise<string> {
   if (!args.desiredDevice) throw new Error("You must provide a desiredDevice");
 
-  return startBrowserSession({
-    platformType: PlatformType.MOBILE,
-    browser: args.desiredBrowser,
-    url: args.desiredURL,
-    os: args.desiredOS,
-    osVersion: args.desiredOSVersion,
-    device: args.desiredDevice,
-  });
+  return startBrowserSession(
+    {
+      platformType: PlatformType.MOBILE,
+      browser: args.desiredBrowser,
+      url: args.desiredURL,
+      os: args.desiredOS,
+      osVersion: args.desiredOSVersion,
+      device: args.desiredDevice,
+    },
+    config,
+  );
 }
 
 /**
  * Handles the core logic for running a browser session
  */
-async function runBrowserSession(rawArgs: any) {
+async function runBrowserSession(rawArgs: any, config: BrowserStackConfig) {
   // Validate and narrow
   const args = LiveArgsSchema.parse(rawArgs);
 
   // Branch desktop vs mobile and delegate
   const launchUrl =
     args.platformType === PlatformType.DESKTOP
-      ? await launchDesktopSession(args)
-      : await launchMobileSession(args);
+      ? await launchDesktopSession(args, config)
+      : await launchMobileSession(args, config);
 
-  return {
-    content: [
+  let response = [
+    {
+      type: "text" as const,
+      text: `✅ Session started. If it didn't open automatically, visit:\n${launchUrl}`,
+    },
+  ];
+
+  if (globalConfig.REMOTE_MCP) {
+    response = [
       {
         type: "text" as const,
-        text: `✅ Session started. If it didn't open automatically, visit:\n${launchUrl}`,
+        text: `✅ To start the session. Click on ${launchUrl}`,
       },
-    ],
+    ];
+  }
+
+  return {
+    content: response,
   };
 }
 
-export default function addBrowserLiveTools(server: McpServer) {
-  server.tool(
+export default function addBrowserLiveTools(
+  server: McpServer,
+  config: BrowserStackConfig,
+) {
+  const tools: Record<string, any> = {};
+
+  tools.runBrowserLiveSession = server.tool(
     "runBrowserLiveSession",
     "Launch a BrowserStack Live session (desktop or mobile).",
     LiveArgsShape,
     async (args) => {
       try {
-        trackMCP("runBrowserLiveSession", server.server.getClientVersion()!);
-        return await runBrowserSession(args);
+        trackMCP(
+          "runBrowserLiveSession",
+          server.server.getClientVersion()!,
+          undefined,
+          config,
+        );
+        return await runBrowserSession(args, config);
       } catch (error) {
         logger.error("Live session failed: %s", error);
         trackMCP(
           "runBrowserLiveSession",
           server.server.getClientVersion()!,
           error,
+          config,
         );
         return {
           content: [
@@ -127,4 +158,6 @@ export default function addBrowserLiveTools(server: McpServer) {
       }
     },
   );
+
+  return tools;
 }

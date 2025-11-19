@@ -5,16 +5,21 @@ import { fetchAutomationScreenshots } from "./automate-utils/fetch-screenshots.j
 import { SessionType } from "../lib/constants.js";
 import { trackMCP } from "../lib/instrumentation.js";
 import logger from "../logger.js";
+import { BrowserStackConfig } from "../lib/types.js";
 
 // Tool function that fetches and processes screenshots from BrowserStack Automate session
-export async function fetchAutomationScreenshotsTool(args: {
-  sessionId: string;
-  sessionType: SessionType;
-}): Promise<CallToolResult> {
+export async function fetchAutomationScreenshotsTool(
+  args: {
+    sessionId: string;
+    sessionType: SessionType;
+  },
+  config: BrowserStackConfig,
+): Promise<CallToolResult> {
   try {
     const screenshots = await fetchAutomationScreenshots(
       args.sessionId,
       args.sessionType,
+      config,
     );
 
     if (screenshots.length === 0) {
@@ -53,8 +58,13 @@ export async function fetchAutomationScreenshotsTool(args: {
 }
 
 //Registers the fetchAutomationScreenshots tool with the MCP server
-export default function addAutomationTools(server: McpServer) {
-  server.tool(
+export default function addAutomationTools(
+  server: McpServer,
+  config: BrowserStackConfig,
+) {
+  const tools: Record<string, any> = {};
+
+  tools.fetchAutomationScreenshots = server.tool(
     "fetchAutomationScreenshots",
     "Fetch and process screenshots from a BrowserStack Automate session",
     {
@@ -70,13 +80,16 @@ export default function addAutomationTools(server: McpServer) {
         trackMCP(
           "fetchAutomationScreenshots",
           server.server.getClientVersion()!,
+          undefined,
+          config,
         );
-        return await fetchAutomationScreenshotsTool(args);
+        return await fetchAutomationScreenshotsTool(args, config);
       } catch (error) {
         trackMCP(
           "fetchAutomationScreenshots",
           server.server.getClientVersion()!,
           error,
+          config,
         );
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error";
@@ -91,4 +104,6 @@ export default function addAutomationTools(server: McpServer) {
       }
     },
   );
+
+  return tools;
 }

@@ -1,13 +1,16 @@
-import axios, { AxiosError } from "axios";
+import { apiClient } from "../../lib/apiClient.js";
 import FormData from "form-data";
 import fs from "fs";
-import config from "../../config.js";
 
 interface UploadResponse {
   app_url: string;
 }
 
-export async function uploadApp(filePath: string): Promise<UploadResponse> {
+export async function uploadApp(
+  filePath: string,
+  username: string,
+  password: string,
+): Promise<UploadResponse> {
   if (!fs.existsSync(filePath)) {
     throw new Error(`File not found at path: ${filePath}`);
   }
@@ -16,27 +19,20 @@ export async function uploadApp(filePath: string): Promise<UploadResponse> {
   formData.append("file", fs.createReadStream(filePath));
 
   try {
-    const response = await axios.post<UploadResponse>(
-      "https://api-cloud.browserstack.com/app-live/upload",
-      formData,
-      {
-        headers: {
-          ...formData.getHeaders(),
-        },
-        auth: {
-          username: config.browserstackUsername,
-          password: config.browserstackAccessKey,
-        },
+    const response = await apiClient.post<UploadResponse>({
+      url: "https://api-cloud.browserstack.com/app-live/upload",
+      headers: {
+        ...formData.getHeaders(),
+        Authorization:
+          "Basic " + Buffer.from(`${username}:${password}`).toString("base64"),
       },
-    );
+      body: formData,
+    });
 
     return response.data;
-  } catch (error: unknown) {
-    if (error instanceof AxiosError) {
-      throw new Error(
-        `Failed to upload app: ${error.response?.data?.message || error.message}`,
-      );
-    }
-    throw error;
+  } catch (error: any) {
+    const msg =
+      error?.response?.data?.message || error?.message || String(error);
+    throw new Error(`Failed to upload app: ${msg}`);
   }
 }

@@ -1,4 +1,5 @@
 import { DefaultFieldMaps } from "./types.js";
+import { randomUUID } from "node:crypto";
 
 /**
  * Build mappings for default fields for priority, status, and case type.
@@ -60,7 +61,7 @@ export function createTestCasePayload(
         rich_text_id: null,
         scenario: scenarioId,
         test_case_count: tc.test_case_count || 1,
-        uuid: tc.uuid || crypto.randomUUID?.() || "unknown-uuid",
+        uuid: tc.uuid || randomUUID() || "unknown-uuid",
         "x-bstack-traceRequestId": traceId,
       },
     }),

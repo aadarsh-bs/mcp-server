@@ -2,10 +2,24 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import logger from "../logger.js";
-import config from "../config.js";
+import { getBrowserStackAuth } from "../lib/get-auth.js";
+import { BrowserStackConfig } from "../lib/types.js";
 import { trackMCP } from "../lib/instrumentation.js";
 import { maybeCompressBase64 } from "../lib/utils.js";
 import { remote } from "webdriverio";
+import { AppTestPlatform } from "./appautomate-utils/native-execution/types.js";
+import { setupAppAutomateHandler } from "./appautomate-utils/appium-sdk/handler.js";
+import { validateAppAutomateDevices } from "./sdk-utils/common/device-validator.js";
+
+import {
+  SETUP_APP_AUTOMATE_DESCRIPTION,
+  SETUP_APP_AUTOMATE_SCHEMA,
+} from "./appautomate-utils/appium-sdk/constants.js";
+
+import {
+  PlatformDevices,
+  Platform,
+} from "./appautomate-utils/native-execution/types.js";
 
 import {
   getDevicesAndBrowsers,
@@ -18,26 +32,17 @@ import {
   resolveVersion,
   validateArgs,
   uploadApp,
-} from "./appautomate-utils/appautomate.js";
-
-// Types
-interface Device {
-  device: string;
-  display_name: string;
-  os_version: string;
-  real_mobile: boolean;
-}
-
-interface PlatformDevices {
-  os: string;
-  os_display_name: string;
-  devices: Device[];
-}
-
-enum Platform {
-  ANDROID = "android",
-  IOS = "ios",
-}
+  uploadEspressoApp,
+  uploadEspressoTestSuite,
+  triggerEspressoBuild,
+  uploadXcuiApp,
+  uploadXcuiTestSuite,
+  triggerXcuiBuild,
+} from "./appautomate-utils/native-execution/appautomate.js";
+import {
+  RUN_APP_AUTOMATE_DESCRIPTION,
+  RUN_APP_AUTOMATE_SCHEMA,
+} from "./appautomate-utils/native-execution/constants.js";
 
 /**
  * Launches an app on a selected BrowserStack device and takes a screenshot.
@@ -45,13 +50,21 @@ enum Platform {
 async function takeAppScreenshot(args: {
   desiredPlatform: Platform;
   desiredPlatformVersion: string;
-  appPath: string;
+  appPath?: string;
   desiredPhone: string;
+  browserstackAppUrl?: string;
+  config: BrowserStackConfig;
 }): Promise<CallToolResult> {
   let driver;
   try {
     validateArgs(args);
-    const { desiredPlatform, desiredPhone, appPath } = args;
+    const {
+      desiredPlatform,
+      desiredPhone,
+      appPath,
+      browserstackAppUrl,
+      config,
+    } = args;
     let { desiredPlatformVersion } = args;
 
     const platforms = (
@@ -86,9 +99,22 @@ async function takeAppScreenshot(args: {
         `Device "${desiredPhone}" with version ${desiredPlatformVersion} not found.`,
       );
     }
+    const authString = getBrowserStackAuth(config);
+    const [username, password] = authString.split(":");
 
-    const app_url = await uploadApp(appPath);
-    logger.info(`App uploaded. URL: ${app_url}`);
+    let app_url: string;
+    if (browserstackAppUrl) {
+      app_url = browserstackAppUrl;
+      logger.info(`Using provided BrowserStack app URL: ${app_url}`);
+    } else {
+      if (!appPath) {
+        throw new Error(
+          "appPath is required when browserstackAppUrl is not provided",
+        );
+      }
+      app_url = await uploadApp(appPath, username, password);
+      logger.info(`App uploaded. URL: ${app_url}`);
+    }
 
     const capabilities = {
       platformName: desiredPlatform,
@@ -97,20 +123,27 @@ async function takeAppScreenshot(args: {
       "appium:app": app_url,
       "appium:autoGrantPermissions": true,
       "bstack:options": {
-        userName: config.browserstackUsername,
-        accessKey: config.browserstackAccessKey,
+        userName: username,
+        accessKey: password,
         appiumVersion: "2.0.1",
       },
     };
 
     logger.info("Starting WebDriver session on BrowserStack...");
-    driver = await remote({
-      protocol: "https",
-      hostname: "hub.browserstack.com",
-      port: 443,
-      path: "/wd/hub",
-      capabilities,
-    });
+    try {
+      driver = await remote({
+        protocol: "https",
+        hostname: "hub.browserstack.com",
+        port: 443,
+        path: "/wd/hub",
+        capabilities,
+      });
+    } catch (error) {
+      logger.error("Error initializing WebDriver:", error);
+      throw new Error(
+        "Failed to initialize the WebDriver or a timeout occurred. Please try again.",
+      );
+    }
 
     const screenshotBase64 = await driver.takeScreenshot();
     const compressed = await maybeCompressBase64(screenshotBase64);
@@ -136,11 +169,151 @@ async function takeAppScreenshot(args: {
   }
 }
 
-/**
- * Registers the `takeAppScreenshot` tool with the MCP server.
- */
-export default function addAppAutomationTools(server: McpServer) {
-  server.tool(
+//Runs AppAutomate tests on BrowserStack by uploading app and test suite, then triggering a test run.
+async function runAppTestsOnBrowserStack(
+  args: {
+    appPath?: string;
+    testSuitePath?: string;
+    browserstackAppUrl?: string;
+    browserstackTestSuiteUrl?: string;
+    devices: Array<Array<string>>;
+    project: string;
+    detectedAutomationFramework: string;
+  },
+  config: BrowserStackConfig,
+): Promise<CallToolResult> {
+  // Validate that either paths or URLs are provided for both app and test suite
+  if (!args.browserstackAppUrl && !args.appPath) {
+    throw new Error(
+      "appPath is required when browserstackAppUrl is not provided",
+    );
+  }
+  if (!args.browserstackTestSuiteUrl && !args.testSuitePath) {
+    throw new Error(
+      "testSuitePath is required when browserstackTestSuiteUrl is not provided",
+    );
+  }
+
+  // Validate devices against real BrowserStack device data
+  await validateAppAutomateDevices(args.devices);
+
+  switch (args.detectedAutomationFramework) {
+    case AppTestPlatform.ESPRESSO: {
+      try {
+        let app_url: string;
+        if (args.browserstackAppUrl) {
+          app_url = args.browserstackAppUrl;
+          logger.info(`Using provided BrowserStack app URL: ${app_url}`);
+        } else {
+          app_url = await uploadEspressoApp(args.appPath!, config);
+          logger.info(`App uploaded. URL: ${app_url}`);
+        }
+
+        let test_suite_url: string;
+        if (args.browserstackTestSuiteUrl) {
+          test_suite_url = args.browserstackTestSuiteUrl;
+          logger.info(
+            `Using provided BrowserStack test suite URL: ${test_suite_url}`,
+          );
+        } else {
+          test_suite_url = await uploadEspressoTestSuite(
+            args.testSuitePath!,
+            config,
+          );
+          logger.info(`Test suite uploaded. URL: ${test_suite_url}`);
+        }
+
+        // Convert array format to string format for Espresso
+        const deviceStrings = args.devices.map((device) => {
+          const [, deviceName, osVersion] = device;
+          return `${deviceName}-${osVersion}`;
+        });
+
+        const build_id = await triggerEspressoBuild(
+          app_url,
+          test_suite_url,
+          deviceStrings,
+          args.project,
+        );
+
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ Espresso run started successfully!\n\n🔧 Build ID: ${build_id}\n🔗 View your build: https://app-automate.browserstack.com/builds/${build_id}`,
+            },
+          ],
+        };
+      } catch (err) {
+        logger.error("Error running App Automate test", err);
+        throw err;
+      }
+    }
+    case AppTestPlatform.XCUITEST: {
+      try {
+        let app_url: string;
+        if (args.browserstackAppUrl) {
+          app_url = args.browserstackAppUrl;
+          logger.info(`Using provided BrowserStack app URL: ${app_url}`);
+        } else {
+          app_url = await uploadXcuiApp(args.appPath!, config);
+          logger.info(`App uploaded. URL: ${app_url}`);
+        }
+
+        let test_suite_url: string;
+        if (args.browserstackTestSuiteUrl) {
+          test_suite_url = args.browserstackTestSuiteUrl;
+          logger.info(
+            `Using provided BrowserStack test suite URL: ${test_suite_url}`,
+          );
+        } else {
+          test_suite_url = await uploadXcuiTestSuite(
+            args.testSuitePath!,
+            config,
+          );
+          logger.info(`Test suite uploaded. URL: ${test_suite_url}`);
+        }
+
+        // Convert array format to string format for XCUITest
+        const deviceStrings = args.devices.map((device) => {
+          const [, deviceName, osVersion] = device;
+          return `${deviceName}-${osVersion}`;
+        });
+
+        const build_id = await triggerXcuiBuild(
+          app_url,
+          test_suite_url,
+          deviceStrings,
+          args.project,
+          config,
+        );
+        return {
+          content: [
+            {
+              type: "text",
+              text: `✅ XCUITest run started successfully!\n\n🔧 Build ID: ${build_id}\n🔗 View your build: https://app-automate.browserstack.com/builds/${build_id}`,
+            },
+          ],
+        };
+      } catch (err) {
+        logger.error("Error running XCUITest App Automate test", err);
+        throw err;
+      }
+    }
+    default:
+      throw new Error(
+        `Unsupported automation framework: ${args.detectedAutomationFramework}. If you need support for this framework, please open an issue at Github`,
+      );
+  }
+}
+
+export default function addAppAutomationTools(
+  server: McpServer,
+  config: BrowserStackConfig,
+) {
+  const tools: Record<string, any> = {};
+
+  tools.takeAppScreenshot = server.tool(
     "takeAppScreenshot",
     "Use this tool to take a screenshot of an app running on a BrowserStack device. This is useful for visual testing and debugging.",
     {
@@ -165,10 +338,20 @@ export default function addAppAutomationTools(server: McpServer) {
     },
     async (args) => {
       try {
-        trackMCP("takeAppScreenshot", server.server.getClientVersion()!);
-        return await takeAppScreenshot(args);
+        trackMCP(
+          "takeAppScreenshot",
+          server.server.getClientVersion()!,
+          undefined,
+          config,
+        );
+        return await takeAppScreenshot({ ...args, config });
       } catch (error) {
-        trackMCP("takeAppScreenshot", server.server.getClientVersion()!, error);
+        trackMCP(
+          "takeAppScreenshot",
+          server.server.getClientVersion()!,
+          error,
+          config,
+        );
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error";
         return {
@@ -182,4 +365,71 @@ export default function addAppAutomationTools(server: McpServer) {
       }
     },
   );
+
+  tools.runAppTestsOnBrowserStack = server.tool(
+    "runAppTestsOnBrowserStack",
+    RUN_APP_AUTOMATE_DESCRIPTION,
+    RUN_APP_AUTOMATE_SCHEMA,
+    async (args) => {
+      try {
+        trackMCP(
+          "runAppTestsOnBrowserStack",
+          server.server.getClientVersion()!,
+          undefined,
+          config,
+        );
+        const devicesAsArrays: Array<Array<string>> = args.devices.map(
+          (device) => [device.platform, device.deviceName, device.osVersion],
+        );
+        return await runAppTestsOnBrowserStack(
+          { ...args, devices: devicesAsArrays },
+          config,
+        );
+      } catch (error) {
+        trackMCP(
+          "runAppTestsOnBrowserStack",
+          server.server.getClientVersion()!,
+          error,
+          config,
+        );
+        const errorMessage =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Error running App Automate test: ${errorMessage}`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  tools.setupBrowserStackAppAutomateTests = server.tool(
+    "setupBrowserStackAppAutomateTests",
+    SETUP_APP_AUTOMATE_DESCRIPTION,
+    SETUP_APP_AUTOMATE_SCHEMA,
+    async (args) => {
+      try {
+        return await setupAppAutomateHandler(args, config);
+      } catch (error) {
+        const error_message =
+          error instanceof Error ? error.message : "Unknown error";
+        return {
+          content: [
+            {
+              type: "text",
+              text: `Failed to bootstrap project with BrowserStack App Automate SDK. Error: ${error_message}. Please open an issue on GitHub if the problem persists`,
+              isError: true,
+            },
+          ],
+          isError: true,
+        };
+      }
+    },
+  );
+
+  return tools;
 }

@@ -1,9 +1,10 @@
 import logger from "../logger.js";
-import config from "../config.js";
+import { getBrowserStackAuth } from "./get-auth.js";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 const packageJson = require("../../package.json");
-import axios from "axios";
+import { apiClient } from "./apiClient.js";
+import globalConfig from "../config.js";
 
 interface MCPEventPayload {
   event_type: string;
@@ -14,6 +15,7 @@ interface MCPEventPayload {
     success?: boolean;
     error_message?: string;
     error_type?: string;
+    is_remote?: boolean;
   };
 }
 
@@ -21,12 +23,8 @@ export function trackMCP(
   toolName: string,
   clientInfo: { name?: string; version?: string },
   error?: unknown,
+  config?: any,
 ): void {
-  if (config.DEV_MODE) {
-    logger.info("Tracking MCP is disabled in dev mode");
-    return;
-  }
-
   const instrumentationEndpoint = "https://api.browserstack.com/sdk/v1/event";
   const isSuccess = !error;
   const mcpClient = clientInfo?.name || "unknown";
@@ -47,6 +45,7 @@ export function trackMCP(
       tool_name: toolName,
       mcp_client: mcpClient,
       success: isSuccess,
+      is_remote: globalConfig.REMOTE_MCP,
     },
   };
 
@@ -58,15 +57,22 @@ export function trackMCP(
       error instanceof Error ? error.constructor.name : "Unknown";
   }
 
-  axios
-    .post(instrumentationEndpoint, event, {
+  let authHeader = undefined;
+  if (config) {
+    const authString = getBrowserStackAuth(config);
+    authHeader = `Basic ${Buffer.from(authString).toString("base64")}`;
+  }
+
+  apiClient
+    .post({
+      url: instrumentationEndpoint,
+      body: event,
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Basic ${Buffer.from(
-          `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-        ).toString("base64")}`,
+        ...(authHeader ? { Authorization: authHeader } : {}),
       },
       timeout: 2000,
+      raise_error: false,
     })
     .catch(() => {});
 }

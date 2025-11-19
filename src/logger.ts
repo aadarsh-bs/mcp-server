@@ -1,9 +1,10 @@
 import { pino } from "pino";
 
-let logger: pino.Logger;
+// 1. The actual logger instance, swapped out as needed
+let currentLogger: any;
 
 if (process.env.NODE_ENV === "development") {
-  logger = pino({
+  currentLogger = pino({
     level: "debug",
     transport: {
       targets: [
@@ -23,8 +24,8 @@ if (process.env.NODE_ENV === "development") {
     },
   });
 } else {
-  // NULL logger
-  logger = pino({
+  // Null logger (logs go to /dev/null or NUL)
+  currentLogger = pino({
     level: "info",
     transport: {
       target: "pino/file",
@@ -33,6 +34,26 @@ if (process.env.NODE_ENV === "development") {
       },
     },
   });
+}
+
+// 2. Proxy logger: always delegates to the currentLogger
+const logger: any = new Proxy(
+  {},
+  {
+    get(_target, prop) {
+      // Forward function calls to currentLogger
+      if (typeof currentLogger[prop] === "function") {
+        return (...args: any[]) => currentLogger[prop](...args);
+      }
+      // Forward property gets
+      return currentLogger[prop];
+    },
+  },
+);
+
+// 3. Setter to update the logger instance everywhere
+export function setLogger(customLogger: any): void {
+  currentLogger = customLogger;
 }
 
 export default logger;

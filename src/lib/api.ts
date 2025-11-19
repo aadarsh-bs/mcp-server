@@ -1,19 +1,25 @@
-import config from "../config.js";
+import { getBrowserStackAuth } from "./get-auth.js";
+import { BrowserStackConfig } from "../lib/types.js";
+import { apiClient } from "./apiClient.js";
 
 export async function getLatestO11YBuildInfo(
   buildName: string,
   projectName: string,
+  config: BrowserStackConfig,
 ) {
   const buildsUrl = `https://api-observability.browserstack.com/ext/v1/builds/latest?build_name=${encodeURIComponent(
     buildName,
   )}&project_name=${encodeURIComponent(projectName)}`;
 
-  const buildsResponse = await fetch(buildsUrl, {
+  const authString = getBrowserStackAuth(config);
+  const auth = Buffer.from(authString).toString("base64");
+
+  const buildsResponse = await apiClient.get({
+    url: buildsUrl,
     headers: {
-      Authorization: `Basic ${Buffer.from(
-        `${config.browserstackUsername}:${config.browserstackAccessKey}`,
-      ).toString("base64")}`,
+      Authorization: `Basic ${auth}`,
     },
+    raise_error: false,
   });
 
   if (!buildsResponse.ok) {
@@ -25,5 +31,5 @@ export async function getLatestO11YBuildInfo(
     throw new Error(`Failed to fetch builds: ${buildsResponse.statusText}`);
   }
 
-  return buildsResponse.json();
+  return buildsResponse;
 }

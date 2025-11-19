@@ -3,13 +3,16 @@ import { z } from "zod";
 import { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { getSelfHealSelectors } from "./selfheal-utils/selfheal.js";
 import logger from "../logger.js";
+import { trackMCP } from "../lib/instrumentation.js";
+import { BrowserStackConfig } from "../lib/types.js";
 
 // Tool function that fetches self-healing selectors
-export async function fetchSelfHealSelectorTool(args: {
-  sessionId: string;
-}): Promise<CallToolResult> {
+export async function fetchSelfHealSelectorTool(
+  args: { sessionId: string },
+  config: BrowserStackConfig,
+): Promise<CallToolResult> {
   try {
-    const selectors = await getSelfHealSelectors(args.sessionId);
+    const selectors = await getSelfHealSelectors(args.sessionId, config);
     return {
       content: [
         {
@@ -27,8 +30,13 @@ export async function fetchSelfHealSelectorTool(args: {
 }
 
 // Registers the fetchSelfHealSelector tool with the MCP server
-export default function addSelfHealTools(server: McpServer) {
-  server.tool(
+export default function addSelfHealTools(
+  server: McpServer,
+  config: BrowserStackConfig,
+) {
+  const tools: Record<string, any> = {};
+
+  tools.fetchSelfHealedSelectors = server.tool(
     "fetchSelfHealedSelectors",
     "Retrieves AI-generated, self-healed selectors for a BrowserStack Automate session to resolve flaky tests caused by dynamic DOM changes.",
     {
@@ -36,8 +44,20 @@ export default function addSelfHealTools(server: McpServer) {
     },
     async (args) => {
       try {
-        return await fetchSelfHealSelectorTool(args);
+        trackMCP(
+          "fetchSelfHealedSelectors",
+          server.server.getClientVersion()!,
+          undefined,
+          config,
+        );
+        return await fetchSelfHealSelectorTool(args, config);
       } catch (error) {
+        trackMCP(
+          "fetchSelfHealedSelectors",
+          server.server.getClientVersion()!,
+          error,
+          config,
+        );
         const errorMessage =
           error instanceof Error ? error.message : "Unknown error";
         return {
@@ -51,4 +71,6 @@ export default function addSelfHealTools(server: McpServer) {
       }
     },
   );
+
+  return tools;
 }

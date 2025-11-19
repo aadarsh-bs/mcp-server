@@ -3,7 +3,7 @@ import {
   getDeviceVersions,
   resolveVersion,
   validateArgs,
-} from '../../src/tools/appautomate-utils/appautomate';
+} from '../../src/tools/appautomate-utils/native-execution/appautomate';
 import { beforeEach, it, expect, describe, vi } from 'vitest'
 
 
@@ -66,7 +66,7 @@ describe('appautomate utils', () => {
 
     it('should fail if app path is not provided', () => {
       const args = { ...validAndroidArgs, appPath: '' };
-      expect(() => validateArgs(args)).toThrow('You must provide an appPath');
+      expect(() => validateArgs(args)).toThrow('Either appPath or browserstackAppUrl must be provided');
     });
 
     it('should fail if phone is not provided', () => {
